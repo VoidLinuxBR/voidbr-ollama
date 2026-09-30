@@ -7,7 +7,8 @@
 # Estrutura do tarball oficial (conferida na v0.35.0, 2,2 GB descompactado):
 #   bin/ollama               28 MB  -> /usr/bin/ollama
 #   lib/ollama/ (CPU, base)  32 MB  -> /usr/lib/ollama  (procurado em <bin>/../lib/ollama)
-#   lib/ollama/vulkan        43 MB  -> /usr/lib/ollama/vulkan (AMD/Intel via Vulkan)
+#   lib/ollama/vulkan        43 MB  -> /usr/lib/ollama/vulkan (AMD/Intel via Vulkan; ligado por
+#                                      padrão, precisa de vulkan-loader + mesa-vulkan-radeon/-intel)
 #   lib/ollama/cuda_v12    1285 MB  \ NVIDIA: vão no pacote voidbr-ollama-cuda,
 #   lib/ollama/cuda_v13     851 MB  /  para quem não tem NVIDIA não baixar 2 GB à toa
 # AMD/ROCm fica para um pacote à parte (ollama-linux-amd64-rocm.tar.zst).
@@ -99,9 +100,10 @@ package() {
 		# Quanto tempo o modelo fica na memória depois da última pergunta
 		#OLLAMA_KEEP_ALIVE=5m
 		#
-		# Aceleração por Vulkan (GPUs AMD/Intel; precisa do vulkan-loader e do driver
-		# Vulkan da placa). Placas NVIDIA: instale o voidbr-ollama-cuda.
-		#OLLAMA_VULKAN=1
+		# Aceleração por Vulkan (GPUs AMD/Intel): vem LIGADA por padrão, basta ter o
+		# vulkan-loader e o driver Vulkan da placa (mesa-vulkan-radeon ou mesa-vulkan-intel).
+		# Se der problema, desligue com 0. Placas NVIDIA: instale o voidbr-ollama-cuda.
+		#OLLAMA_VULKAN=0
 	EOF
 	chmod 755 "${pkgdir}/etc/sv/ollama/run" "${pkgdir}/etc/sv/ollama/log/run"
 	chmod 644 "${pkgdir}/etc/sv/ollama/conf"
@@ -124,6 +126,7 @@ post_install() {
 	echo "    Habilite o serviço:  sudo ln -s /etc/sv/ollama /var/service/"
 	echo "    Baixe um modelo:     ollama pull qwen3:4b"
 	echo "    Placa NVIDIA:        sudo xbps-install -S voidbr-ollama-cuda"
+	echo "    Placa AMD/Intel:     sudo xbps-install -S vulkan-loader mesa-vulkan-radeon  (ou -intel)"
 	echo "    Ou use o assistente: voidbr-ai --setup-ai  (ou ☰ → Configurar IA local)"
 }
 
@@ -135,3 +138,4 @@ post_upgrade() {
 	log "Finalizando upgrade"
 	echo "==> voidbr-ollama atualizado. Reinicie o serviço: sudo sv restart ollama"
 }
+
