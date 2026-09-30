@@ -1,66 +1,130 @@
 # Maintainer: Vilmar Catafesta <vcatafesta@gmail.com>
+#
+# Ollama para o VoidBR: binário oficial do projeto + serviço runit.
+# O Ollama não está no repositório oficial do Void; o instalador dele
+# (install.sh) usa /usr/local e systemd, por isso este pacote.
+#
+# Estrutura do tarball oficial (conferida na v0.35.0, 2,2 GB descompactado):
+#   bin/ollama               28 MB  -> /usr/bin/ollama
+#   lib/ollama/ (CPU, base)  32 MB  -> /usr/lib/ollama  (procurado em <bin>/../lib/ollama)
+#   lib/ollama/vulkan        43 MB  -> /usr/lib/ollama/vulkan (AMD/Intel via Vulkan)
+#   lib/ollama/cuda_v12    1285 MB  \ NVIDIA: vão no pacote voidbr-ollama-cuda,
+#   lib/ollama/cuda_v13     851 MB  /  para quem não tem NVIDIA não baixar 2 GB à toa
+# AMD/ROCm fica para um pacote à parte (ollama-linux-amd64-rocm.tar.zst).
+#
+# Binário glibc: não funciona no VoidBR musl.
 
-pkgname=voidbr-pkgname
-pkgdesc="Package template for VoidLinuxBR"
-pkgver=$(date +%Y%m%d)
-pkgrel=$(date +%H%M)
-provides=()               # "eu SOU o $pkgname pkg1, pra quem depender deles"
-replaces=()               # "remove o pkg1 pkg2 antigo automaticamente quando eu instalar"
-conflicts=()              # "nunca me deixe coexistir com o pkg1 pkg2 original"
-arch=('any')
+pkgname=voidbr-ollama
+pkgver=0.35.0
+pkgrel=1
+pkgdesc="Ollama - roda modelos de linguagem localmente (binário oficial, CPU/Vulkan + serviço runit)"
+provides=("ollama-${pkgver}_${pkgrel}")   # "eu SOU o ollama, pra quem depender dele"
+conflicts=(ollama)                        # "nunca me deixe coexistir com o ollama original"
+arch=(x86_64 aarch64)
 license=('MIT')
-#url="ssh://git@github.com/voidlinuxbr/${pkgname}"
-url="https://github.com/voidlinuxbr/${pkgname}"
-source=("git+${url}.git")
-md5sums=('SKIP')
-makedepends=()
+url="https://github.com/ollama/ollama"
+options=('!strip')
 depends=()
-backup=()
+makedepends=(zstd)
+backup=('/etc/sv/ollama/conf')
 
-# Automatically detect and use the correct install file
-if [ -e "${pkgname}.install" ]; then
-	install=${pkgname}.install
-elif [ -e "pkgbuild.install" ]; then
-	install=pkgfile.install
-fi
+case "$(uname -m)" in
+aarch64)
+	_arch=arm64
+	_sha256='cb627d332b1fe5055bd5485ca10d595da8429e447648209e375390ec3bd09374'
+	;;
+*)
+	_arch=amd64
+	_sha256='1c114a6b220c5efca2ef2b1e5f01d1e535e26f6cd6d1678c8489325d2835e525'
+	;;
+esac
+_tarball="ollama-linux-${_arch}.tar.zst"
+source=("https://github.com/ollama/ollama/releases/download/v${pkgver}/${_tarball}")
+md5sums=('SKIP')   # conferido com sha256 (sha256sum.txt do release) no package()
 
 package() {
-	# Verify default folder
-  if [ -d "${srcdir}/${pkgname}/${pkgname}" ]; then
-		InternalDir="${srcdir}/${pkgname}/${pkgname}"
-  elif [ -d "${srcdir}/${pkgname}" ]; then
-		InternalDir="${srcdir}/${pkgname}"
-	else
-    #local
-		InternalDir="${WORKDIR}"
+	cd "${srcdir}"
+
+	# confere o download contra o sha256sum.txt oficial do release
+	if [ -f "${_tarball}" ]; then
+		echo "${_sha256}  ${_tarball}" | sha256sum -c - || {
+			msg "sha256 do ${_tarball} não confere"
+			return 1
+		}
 	fi
 
-	cd "${InternalDir}"
-	# Copiar a estrutura de /etc, /usr e /opt para /
-	local dirs=("boot" "etc" "opt" "usr" "var")
-	for dir in "${dirs[@]}"; do
-		if [ -d "${InternalDir}/${dir}" ]; then
-			cp -a "${InternalDir}/${dir}" "${pkgdir}/"
-		fi
-	done
+	[ -x bin/ollama ] || { msg "bin/ollama não encontrado no tarball"; return 1; }
+	install -Dm755 bin/ollama "${pkgdir}/usr/bin/ollama"
+	install -d "${pkgdir}/usr/lib"
+	cp -a lib/ollama "${pkgdir}/usr/lib/"
+	# CUDA (NVIDIA) fica no voidbr-ollama-cuda
+	rm -rf "${pkgdir}"/usr/lib/ollama/cuda_v*
 
-	# Install license file if present
-	if [ -f "LICENSE" ]; then
-		install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
-	fi
+	# licenças de terceiros que vêm no tarball
+	install -d "${pkgdir}/usr/share/licenses/${pkgname}"
+	cp -a lib/ollama/*LICENSE* lib/ollama/*NOTICE* "${pkgdir}/usr/share/licenses/${pkgname}/" 2>/dev/null || true
 
-	# Install documentation if present
-	if [ -f "README.md" ]; then
-		install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
-	fi
+	# ---- serviço runit ----
+	install -d "${pkgdir}/etc/sv/ollama/log"
+	cat >"${pkgdir}/etc/sv/ollama/run" <<-'EOF'
+		#!/bin/sh
+		# voidbr-ollama: servidor do Ollama (API em http://127.0.0.1:11434)
+		exec 2>&1
+		export HOME=/var/lib/ollama
+		export OLLAMA_MODELS=/var/lib/ollama/models
+		export OLLAMA_HOST=127.0.0.1:11434
+		# ajustes do administrador (OLLAMA_HOST, OLLAMA_KEEP_ALIVE, ...)
+		[ -r ./conf ] && { set -a; . ./conf; set +a; }
+		[ -d "$OLLAMA_MODELS" ] || install -d -o ollama -g ollama -m 0755 "$OLLAMA_MODELS"
+		# grupos video/render: acesso à GPU
+		grupos=ollama
+		for g in video render; do
+			getent group "$g" >/dev/null && grupos="$grupos:$g"
+		done
+		exec chpst -u "ollama:$grupos" /usr/bin/ollama serve
+	EOF
+	cat >"${pkgdir}/etc/sv/ollama/log/run" <<-'EOF'
+		#!/bin/sh
+		exec vlogger -t ollama -p daemon
+	EOF
+	cat >"${pkgdir}/etc/sv/ollama/conf" <<-'EOF'
+		# /etc/sv/ollama/conf - variáveis do servidor Ollama (depois: sv restart ollama)
+		#
+		# Onde ficam os modelos baixados
+		#OLLAMA_MODELS=/var/lib/ollama/models
+		#
+		# Endereço da API. 0.0.0.0:11434 expõe para a rede local (cuidado!)
+		#OLLAMA_HOST=127.0.0.1:11434
+		#
+		# Quanto tempo o modelo fica na memória depois da última pergunta
+		#OLLAMA_KEEP_ALIVE=5m
+		#
+		# Aceleração por Vulkan (GPUs AMD/Intel; precisa do vulkan-loader e do driver
+		# Vulkan da placa). Placas NVIDIA: instale o voidbr-ollama-cuda.
+		#OLLAMA_VULKAN=1
+	EOF
+	chmod 755 "${pkgdir}/etc/sv/ollama/run" "${pkgdir}/etc/sv/ollama/log/run"
+	chmod 644 "${pkgdir}/etc/sv/ollama/conf"
 }
 
 pre_install() {
 	log "Iniciando instalação"
+	if ls /lib/ld-musl-* >/dev/null 2>&1; then
+		echo "==> AVISO: o binário oficial do Ollama é glibc e não roda no VoidBR musl."
+	fi
 }
 
 post_install() {
 	log "Finalizando instalação"
+	getent group ollama >/dev/null || groupadd -r ollama
+	getent passwd ollama >/dev/null ||
+		useradd -r -g ollama -d /var/lib/ollama -s /bin/false -c "Ollama" ollama
+	install -d -o ollama -g ollama -m 0755 /var/lib/ollama /var/lib/ollama/models
+	echo "==> voidbr-ollama instalado."
+	echo "    Habilite o serviço:  sudo ln -s /etc/sv/ollama /var/service/"
+	echo "    Baixe um modelo:     ollama pull qwen3:4b"
+	echo "    Placa NVIDIA:        sudo xbps-install -S voidbr-ollama-cuda"
+	echo "    Ou use o assistente: voidbr-ai --setup-ai  (ou ☰ → Configurar IA local)"
 }
 
 pre_upgrade() {
@@ -69,4 +133,5 @@ pre_upgrade() {
 
 post_upgrade() {
 	log "Finalizando upgrade"
+	echo "==> voidbr-ollama atualizado. Reinicie o serviço: sudo sv restart ollama"
 }
